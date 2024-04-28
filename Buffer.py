@@ -19,11 +19,11 @@ import numpy as np
 # img = rasterio.open('data/input/image/LC09_L2SP_124051_20240407_20240408_02_T1_QA_PIXEL.TIF')
 # print(img.count, img.height, img.width, img.crs, img.dtypes, img.bounds)
 
-tif = gdal.Open('data/input/image/LC09_L2SP_124051_20240407_20240408_02_T1_SR_B1.TIF')
+ref = gdal.Open('data/input/image/LC09_L2SP_124051_20240407_20240408_02_T1_SR_B1.TIF')
 
-geo_t = tif.GetGeoTransform()
-x_size= tif.RasterXSize
-y_size = tif.RasterYSize
+geo_t = ref.GetGeoTransform()
+x_size= ref.RasterXSize
+y_size = ref.RasterYSize
 
 
 xmin = min(geo_t[0], geo_t[0] + x_size * geo_t[1])
@@ -49,7 +49,7 @@ rds_idx = np.where(roads == 255)
 
 data = list(zip(rds_idx[0].astype(int), rds_idx[1]))
 
-# data = data[-10000:]
+# data = data[:10000]
 
 spark = SparkSession.builder.appName("Buffer").getOrCreate()
 df = spark.createDataFrame([([int(d[0]) - 1, int(d[0]), int(d[0]) + 1], 
@@ -67,20 +67,40 @@ df = df.dropDuplicates(["OSM_RDS_IDX_X", "OSM_RDS_IDX_Y"])
 df = df.withColumn("OSM_RDS_IDX_X", df["OSM_RDS_IDX_X"].cast(IntegerType()))
 df = df.withColumn("OSM_RDS_IDX_Y", df["OSM_RDS_IDX_Y"].cast(IntegerType()))
 
-
-array = np.array(tif.GetRasterBand(1).ReadAsArray())
-
-
-vector =  VectorAssembler(inputCols =["OSM_RDS_IDX_X", "OSM_RDS_IDX_Y"], 
-                          outputCol= "b1").transform(df)
 def loc_img_value(x):
     return int(array[int(x[0])][int(x[1])])
 
+for b in [i for i in os.listdir('data/input/image') if "B" in i]:
+    b_label = b.split('_')[-1].split('.')[0]
+    band = gdal.Open('data/input/image/{}'.format(b))
+    array = np.array(band.GetRasterBand(1).ReadAsArray())
 
-get_img_value = F.udf(lambda x: loc_img_value(x), IntegerType())
+    df = VectorAssembler(inputCols =["OSM_RDS_IDX_X", "OSM_RDS_IDX_Y"], 
+                          outputCol= "{}".format(b_label)).transform(df)
+    
+    get_img_value = F.udf(lambda x: loc_img_value(x), IntegerType())
 
-vector = vector.withColumn("B1", get_img_value("b1"))
+    df = df.withColumn("{}".format(b_label), get_img_value("{}".format(b_label)))
 
-vector.describe().show()
+    if b_label != "B10":
+        df = df.withColumn("{}".format(b_label), 
+                      ((col("{}".format(b_label)) * .0000275) + -0.2))
+        df = df.withColumn("{}".format(b_label), 
+                      F.when(df["{}".format(b_label)] < 0, 0).otherwise(df["{}".format(b_label)]))
+    else:
+        df = df.withColumn("{}".format(b_label), 
+                      ((col("{}".format(b_label)) * .00341802) + 149))
+
+df.describe().show()
+# vector =  VectorAssembler(inputCols =["OSM_RDS_IDX_X", "OSM_RDS_IDX_Y"], 
+#                           outputCol= "b1").transform(df)
+# def loc_img_value(x):
+#     return int(array[int(x[0])][int(x[1])])
+
+# get_img_value = F.udf(lambda x: loc_img_value(x), IntegerType())
+
+# vector = vector.withColumn("B1", get_img_value("b1"))
+
+# # vector.describe().show()
 
 
