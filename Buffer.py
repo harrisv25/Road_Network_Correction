@@ -8,7 +8,7 @@ from pyspark.sql.types import IntegerType
 from osgeo import gdal, ogr, osr
 import numpy as np
 import pandas as pd
-
+from pyspark.ml.regression import LinearRegression
 
 # https://spark.apache.org/docs/latest/ml-classification-regression.html
 
@@ -45,26 +45,51 @@ rds_idx = np.where(roads == 255)
 data = list(zip(rds_idx[0].astype(int), rds_idx[1].astype(int)))
 
 
-# data = data[:10]
+# data = data[:100000]
+
+def chunker(seq, size):
+     return (seq[pos:pos+size] for pos in range(0, len(seq), size))
 
 spark = SparkSession.builder.appName("Buffer").getOrCreate()
-df = spark.createDataFrame([([int(d[0]) - 1, int(d[0]), int(d[0]) + 1], 
-                                 [int(d[1]) - 1, int(d[1]), int(d[1]) + 1]) for d in data], 
+for chunk in chunker(data, 10000):
+    if 'df' not in locals():
+        df = spark.createDataFrame([([int(d[0]) - 1, int(d[0]), int(d[0]) + 1], 
+                                 [int(d[1]) - 1, int(d[1]), int(d[1]) + 1]) for d in chunk], 
                                ["OSM_RDS_IDX_X", "OSM_RDS_IDX_Y"])
 
+        df = df.select(explode(df.OSM_RDS_IDX_Y).alias("OSM_RDS_IDX_Y"), df.OSM_RDS_IDX_X)
+        df = df.select(explode(df.OSM_RDS_IDX_X).alias("OSM_RDS_IDX_X"), df.OSM_RDS_IDX_Y)
 
-df = df.select(explode(df.OSM_RDS_IDX_Y).alias("OSM_RDS_IDX_Y"), df.OSM_RDS_IDX_X)
-df = df.select(explode(df.OSM_RDS_IDX_X).alias("OSM_RDS_IDX_X"), df.OSM_RDS_IDX_Y)
+
+        df = df.where((df.OSM_RDS_IDX_X > -1) & 
+                      (df.OSM_RDS_IDX_Y > -1) & 
+                      (df.OSM_RDS_IDX_X < roads.shape[0]) & 
+                      (df.OSM_RDS_IDX_Y < roads.shape[1]))
+        df = df.dropDuplicates(["OSM_RDS_IDX_X", "OSM_RDS_IDX_Y"])
+
+        df = df.withColumn("OSM_RDS_IDX_X", df["OSM_RDS_IDX_X"].cast(IntegerType()))
+        df = df.withColumn("OSM_RDS_IDX_Y", df["OSM_RDS_IDX_Y"].cast(IntegerType()))
+        # print(df.count())
+    elif 'df' in locals():
+        temp = spark.createDataFrame([([int(d[0]) - 1, int(d[0]), int(d[0]) + 1], 
+                                 [int(d[1]) - 1, int(d[1]), int(d[1]) + 1]) for d in chunk], 
+                               ["OSM_RDS_IDX_X", "OSM_RDS_IDX_Y"])
+
+        temp = temp.select(explode(temp.OSM_RDS_IDX_Y).alias("OSM_RDS_IDX_Y"), temp.OSM_RDS_IDX_X)
+        temp = temp.select(explode(temp.OSM_RDS_IDX_X).alias("OSM_RDS_IDX_X"), temp.OSM_RDS_IDX_Y)
 
 
-df = df.where((df.OSM_RDS_IDX_X > -1) & (df.OSM_RDS_IDX_Y > -1) & (df.OSM_RDS_IDX_X < roads.shape[0]) & (df.OSM_RDS_IDX_Y < roads.shape[1]))
-df = df.dropDuplicates(["OSM_RDS_IDX_X", "OSM_RDS_IDX_Y"])
+        temp = temp.where((temp.OSM_RDS_IDX_X > -1) & 
+                  (temp.OSM_RDS_IDX_Y > -1) & 
+                  (temp.OSM_RDS_IDX_X < roads.shape[0]) & 
+                  (temp.OSM_RDS_IDX_Y < roads.shape[1]))
+        temp = temp.dropDuplicates(["OSM_RDS_IDX_X", "OSM_RDS_IDX_Y"])
 
-df = df.withColumn("OSM_RDS_IDX_X", df["OSM_RDS_IDX_X"].cast(IntegerType()))
-df = df.withColumn("OSM_RDS_IDX_Y", df["OSM_RDS_IDX_Y"].cast(IntegerType()))
+        temp = temp.withColumn("OSM_RDS_IDX_X", temp["OSM_RDS_IDX_X"].cast(IntegerType()))
+        temp = temp.withColumn("OSM_RDS_IDX_Y", temp["OSM_RDS_IDX_Y"].cast(IntegerType()))
 
-print(1)
-
+        df = df.union(temp)
+        # print(df.count())
 # For Development purposes. Create a visual raster for training data selection
 # m1= np.array(df.select("OSM_RDS_IDX_X").collect()).ravel()
 # m2= np.array(df.select("OSM_RDS_IDX_Y").collect()).ravel()
@@ -126,7 +151,7 @@ for b in [i for i in os.listdir('data/input/image') if "B" in i]:
         df = df.withColumn("{}".format(b_label), 
                       ((col("{}".format(b_label)) * .00341802) + 149))
 
-print(2)
+
 
 def loc_lbl_value(x):
         return int(labels[int(x[0])][int(x[1])])
@@ -147,6 +172,3 @@ df = df.where((df.B1 > 0) |
               (df.B7 > 0)
               )
 
-print(3)
-
-df.describe().show()
